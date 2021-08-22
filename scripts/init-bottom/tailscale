@@ -1,0 +1,84 @@
+#!/bin/sh
+
+PREREQ=""
+
+prereqs() {
+	echo "$PREREQ"
+}
+
+case "$1" in
+	prereqs)
+		prereqs
+		exit 0
+	;;
+esac
+
+. /scripts/functions
+EXE="$(readlink -f /sbin/tailscaled)" && [ -f "$EXE" ] || exit 1
+PIDFILE="/run/tailscaled.pid"
+
+# delete authorized_keys(5) file to forbid new SSH sessions
+rm -f ~root/.ssh/authorized_keys
+
+IFDOWN="*"
+TAILSCALE_SHUTDOWN_TIMEOUT=60
+#if [ -e /etc/dropbear/config ]; then
+#    . /etc/dropbear/config
+#fi
+
+wait_for_tailscaled() {
+    local pid exe timer="$TAILSCALE_SHUTDOWN_TIMEOUT"
+    pid="$(cat "$PIDFILE" 2>/dev/null)" || return 1
+
+    # when configure_networking() is run asynchronously tailscaled might
+    # not have started yet; ipconfig doesn't react to SIGTERM so we wait
+    # for the network stack to be configured (and tailscaled to start)
+    # rather than terminating the shell and its children
+    while [ $timer -gt 0 ] && exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null)"; do
+        if [ "$exe" = "$EXE" ]; then
+            echo "$pid"
+            return 0
+        fi
+        sleep 1
+        timer=$(( timer - 1 ))
+    done
+    return 1
+}
+
+if PID="$(wait_for_tailscaled)"; then
+    log_begin_msg "Stopping tailscaled"
+
+    # Kill all process groups the leader of which is a child of the
+    # tailscaled process, i.e., SSH sessions and their sub processes
+    # (busybox's kill doesn't accept multiple -PGID so we use a while loop)
+    sed -nr "s/^([0-9]+) \\(.*\\) \\S $PID \\1 .*/\\1/p" \
+        /proc/[0-9]*/stat 2>/dev/null | \
+        while read pgid; do kill -TERM -"$pgid"; done
+
+    # Kill remaining children (there shouldn't be any)
+    sed -nr "s/^([0-9]+) \\(.*\\) \\S $PID [0-9]+ .*/\\1/p" \
+        /proc/[0-9]*/stat 2>/dev/null | \
+        while read pid; do kill -TERM "$pid"; done
+
+    # NOTE: It's racy to kill tailscaled after its children, as a new SSH
+    # session could have been created in between.  However we don't care
+    # about malicious race exploits (an attacker with a root shell could
+    # just kill this script), so deleting root's authorized_keys(5) file
+    # beforehand to forbid new SSH sessions should be good enough.
+
+    kill -TERM "$PID"
+    log_end_msg
+fi
+
+
+if [ "$BOOT" != nfs ] && [ "$IFDOWN" != none ]; then
+    for IFACE in /sys/class/net/$IFDOWN; do
+        [ -e "$IFACE" ] || continue
+        IFACE="${IFACE#/sys/class/net/}"
+        log_begin_msg "Bringing down $IFACE"
+        ip link    set   dev "$IFACE" down
+        ip address flush dev "$IFACE"
+        ip route   flush dev "$IFACE"
+        log_end_msg
+    done
+fi

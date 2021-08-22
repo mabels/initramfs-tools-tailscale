@@ -1,0 +1,51 @@
+#!/bin/sh
+
+PREREQ="udev"
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "$1" in
+    prereqs)
+        prereqs
+        exit 0
+    ;;
+esac
+
+[ "$IP" != off -a "$IP" != none -a -x /sbin/tailscaled ] || exit 0
+
+
+run_tailscaled() {
+    local flags="--state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port 41641"
+    # [ "$debug" != y ] || flags="E$flags" # log to standard error
+
+    # always run configure_networking() before tailscale(8); on NFS
+    # mounts this has been done already
+    [ "$BOOT" = nfs ] || configure_networking
+
+    log_begin_msg "Starting tailscaled"
+    # using exec and keeping tailscale in the foreground enables the
+    # init-bottom script to kill the remaining ipconfig processes if
+    # someone unlocks the rootfs from the console while the network is
+    # being configured
+    PATH=/bin:/sbin
+    export PATH
+    exec /sbin/tailscaled $flags ${TAILSCALE_OPTIONS-}
+}
+
+#if [ -e /etc/dropbear/config ]; then
+#    . /etc/dropbear/config
+#fi
+
+. /scripts/functions
+
+# On NFS mounts, wait until the network is configured.  On local mounts,
+# configure the network in the background (in run_dropbear()) so someone
+# with console access can enter the passphrase immediately.  (With the
+# default ip=dhcp, configure_networking hangs for 5mins or so when the
+# network is unavailable, for instance.)
+[ "$BOOT" != nfs ] || configure_networking
+
+run_tailscaled &
+echo $! >/run/tailscaled.pid
