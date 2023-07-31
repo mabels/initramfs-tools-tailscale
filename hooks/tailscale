@@ -30,6 +30,8 @@ copy_modules_dir kernel/net/ipv6/netfilter
 copy_modules_dir kernel/net/ipv4/netfilter
 copy_modules_dir kernel/net/netfilter
 
+manual_add_modules tun
+
 for so in $(ldconfig -p | sed -nr 's/^\s*libnss_files\.so\.[0-9]+\s.*=>\s*//p'); do
     copy_exec "$so"
 done
